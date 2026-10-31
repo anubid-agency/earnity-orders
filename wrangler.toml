@@ -1,5 +1,5 @@
-name = "SRC/earnity-orders"
-main = "index.js"
+name = "earnity-orders"
+main = "src/index.js"
 compatibility_date = "2026-10-01"
 keep_vars = true
 
