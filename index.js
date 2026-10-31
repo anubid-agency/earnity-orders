@@ -793,12 +793,14 @@ async function handleSellerDeliver(request, env, id, now, cors) {
   const isMatch = timingSafeEqual(providedHash, order.code_hash);
 
   if (!isMatch) {
-    const nextAttempts = Number(order.code_attempts || 0) + 1;
-    const lockNow = nextAttempts >= CODE_MAX_ATTEMPTS ? 1 : 0;
-
-    await env.DB.prepare(
-      'UPDATE orders SET code_attempts = ?, code_locked = ? WHERE id = ?'
-    ).bind(nextAttempts, lockNow, id).run();
+    const upd = await env.DB.prepare(
+      `UPDATE orders SET code_attempts = code_attempts + 1,
+         code_locked = CASE WHEN code_attempts + 1 >= ? THEN 1 ELSE 0 END
+       WHERE id = ? AND code_locked = 0
+       RETURNING code_attempts, code_locked`
+    ).bind(CODE_MAX_ATTEMPTS, id).run();
+    const nextAttempts = Number(upd.results?.[0]?.code_attempts ?? CODE_MAX_ATTEMPTS);
+    const lockNow = Number(upd.results?.[0]?.code_locked ?? 1);
 
     const attemptsLeft = Math.max(0, CODE_MAX_ATTEMPTS - nextAttempts);
     throw new HttpError(400, 'wrong_code', { attempts_left: attemptsLeft, locked: lockNow === 1 });
@@ -829,18 +831,7 @@ async function handleSellerDeliver(request, env, id, now, cors) {
     ),
   ];
 
-  if (order.product_referee_user_id) {
-    batchOps.push(
-      env.DB.prepare(
-        "INSERT INTO order_outbox (id, order_id, kind, payload, status, next_attempt_at, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)"
-      ).bind(
-        generateId('ob_'), id, 'slot_activate',
-        JSON.stringify({ product_id: order.product_id, referee_user_id: order.product_referee_user_id, payment_id: order.payment_id }),
-        now, now
-      )
-    );
-  }
-
+  
   const results = await env.DB.batch(batchOps);
   if ((results[0]?.meta?.changes ?? 0) !== 1) {
     throw new HttpError(409, 'delivery_failed');
@@ -929,7 +920,16 @@ async function handleAdminMarkDelivered(request, env, id, now, cors) {
       "INSERT INTO order_outbox (id, order_id, kind, payload, status, next_attempt_at, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)"
     ).bind(
       generateId('ob_'), id, 'ledger_delivered',
-      JSON.stringify({ order_id: id, order_number: order.order_number, seller_user_id: order.seller_user_id, seller_reserve_ugx: order.seller_reserve_ugx }),
+            JSON.stringify({
+        order_id: id,
+        order_number: order.order_number,
+        seller_user_id: order.seller_user_id,
+        seller_reserve_ugx: order.seller_reserve_ugx,
+        product_referee_user_id: order.product_referee_user_id,
+        product_referee_payable_ugx: order.product_referee_payable_ugx,
+        business_referrer_user_id: order.business_referrer_user_id,
+        business_referrer_payable_ugx: order.business_referrer_payable_ugx,
+      }),
       now, now
     ),
   ]);
@@ -1103,7 +1103,7 @@ async function handleInternalPaymentConfirmed(request, env, now) {
     ).bind(now, deadlineAt, paymentId, codeHash, encRes.cipher, encRes.iv, orderId),
     env.DB.prepare(
       'INSERT INTO order_events (id, order_id, event, actor_user_id, actor_role, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(generateId('ev_'), orderId, 'payment_confirmed', null, 'system', JSON.stringify({ payment_id }), now),
+    ).bind(generateId('ev_'), orderId, 'payment_confirmed', null, 'system', JSON.stringify({ payment_id: paymentId }), now),
     env.DB.prepare(
       "INSERT INTO order_outbox (id, order_id, kind, payload, status, next_attempt_at, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)"
     ).bind(
@@ -1166,6 +1166,7 @@ async function handleInternalReceiptEmail(request, env, now) {
     } catch {}
   }
 
+  if (!plainCode) throw new HttpError(500, 'code_unavailable');
   const buyerFirstName = (buyer?.display_name || 'Buyer').trim().split(/\s+/)[0];
   const sellerName = sellerUser?.display_name || order.business_name;
   const orderDate = formatDate(order.created_at);
@@ -1597,6 +1598,9 @@ export default {
     } catch (err) {
       if (err instanceof HttpError) {
         return json({ error: err.code, ...(err.extra || {}) }, err.status, cors);
+      }
+            if (String(err?.message || '').includes('UNIQUE constraint failed: order_outbox')) {
+        return json({ error: 'already_processed' }, 409, cors);
       }
       console.error('unhandled_error', { name: err?.name, message: err?.message, stack: err?.stack });
       return json({ error: 'server_error' }, 500, cors);
