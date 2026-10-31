@@ -1,29 +1,12 @@
 name = "earnity-orders"
-main = "src/index.js"
-compatibility_date = "2026-10-01"
-keep_vars = true
+main = "index.js"
+compatibility_date = "2026-10-31"
 
 [vars]
+ALLOWED_HOST = "earnityug.com"
 FIREBASE_PROJECT_ID = "earnityug"
-RECEIPT_LOGO_URL = "https://i.ibb.co/BHsbcJhw/earnity.jpg"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "earnity-db-1"
 database_id = "9463caa5-a3df-47d2-a44f-a3cf80288dc0"
-
-[[services]]
-binding = "CATALOG"
-service = "earnity-catalog"
-
-[[services]]
-binding = "REFERRALS"
-service = "earnity-referrals"
-
-[[services]]
-binding = "VERIFY"
-service = "earnity-verify"
-
-[[services]]
-binding = "FEED"
-service = "earnity-feed"
